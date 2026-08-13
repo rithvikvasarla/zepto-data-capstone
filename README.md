@@ -236,3 +236,15 @@ Public Catalogue
 -> SQL JOIN vs pd.merge Validation
 
 The pipeline is reproducible and can be regenerated from scratch using the provided Python script.
+## Reproducibility Check
+
+The pipeline was tested as a standalone Python script after creation.
+
+The final validation confirmed:
+
+- 100 books processed
+- 29 categories identified
+- 6 SQL queries executed
+- fixed conversion rate of 1 GBP = 105.50 INR
+- SQL JOIN and pandas merge produced equivalent results
+- standalone execution completed with exit code 0
