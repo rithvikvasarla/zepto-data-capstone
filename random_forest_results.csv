@@ -1,0 +1,2 @@
+Model,Accuracy,Precision,Recall,F1_Score
+Random Forest,0.7921348314606742,0.7719298245614035,0.6470588235294118,0.704
