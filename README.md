@@ -1,238 +1,215 @@
-# Module 1 - Data Pipeline
+# Zepto Customer Support Assistant
 
-## Overview
+## Module 3 — Support Assistant
 
-This module implements a complete data pipeline for scraping, cleaning, enriching, storing, and querying catalogue data.
+A RAG-based customer support assistant for Zepto using Sentence Transformers, ChromaDB, LangGraph, Pydantic, and FastAPI.
 
-Data source: books.toscrape.com
 
-The pipeline follows:
+## Architecture
 
-Scrape -> Clean -> Convert -> Store -> Query -> Compare
+The system follows this pipeline:
 
-## 1. Data Source
+Ingestion → Embedding → Retrieval → Generation
 
-The project uses books.toscrape.com, a public scraping-practice website.
+### 1. Ingestion
 
-The pipeline scrapes the first 5 paginated catalogue pages and collects at least 60 books.
+The eight Zepto policy documents are stored in the `docs/` directory. Each document is loaded as a document chunk and used as the source content for the retrieval system.
 
-Fields collected:
-- title
-- price
-- star_rating
-- availability
-- category
+### 2. Embedding
 
-## 2. Technologies Used
+The `all-MiniLM-L6-v2` model from Sentence Transformers generates embeddings locally. No external embedding API is required.
+
+### 3. Retrieval
+
+The embeddings are stored in the ChromaDB collection `zepto_policies`. The `retrieve_and_answer` LangGraph node embeds a policy query and retrieves the top 3 most similar chunks.
+
+### 4. Generation
+
+The retrieved context is used by the `retrieve_and_answer` node to generate the final policy response. General questions are handled by the `direct_answer` node.
+
+The LangGraph flow is:
+
+START → classify_intent → retrieve_and_answer → END
+
+or
+
+START → classify_intent → direct_answer → END
+
+
+## LangGraph and Intent Routing
+
+The application uses a LangGraph `StateGraph` with three nodes:
+
+- `classify_intent` — classifies the query as `policy_question` or `general_question`.
+- `retrieve_and_answer` — retrieves the top 3 relevant policy chunks from ChromaDB and generates the policy response.
+- `direct_answer` — handles general questions without retrieval.
+
+A conditional edge from `classify_intent` routes the query to `retrieve_and_answer` or `direct_answer`.
+
+## MOCK_LLM Mode
+
+The application defaults to `MOCK_LLM=1`. This is the required offline graded mode and does not make any LLM API calls.
+
+In mock mode, intent classification uses a deterministic keyword heuristic. Policy keywords include `delivery`, `return`, `refund`, `membership`, `tracking`, `cancel`, `gift card`, and `support hours`.
+
+For policy questions, retrieval still runs using the local Sentence Transformer model and ChromaDB. The answer follows the required deterministic format:
+
+`Based on the retrieved context: <top retrieved chunk>`
+
+For general questions, the fixed mock response is:
+
+`I can only answer questions about Zepto policies right now.`
+
+When `MOCK_LLM=0` is explicitly set, the optional real-LLM path can be used for classification and answer generation. The retrieval step remains local and unchanged.
+
+
+## Structured Output
+
+The final API response is validated using the Pydantic `SupportResponse` model with three fields:
+
+- `answer` — the generated answer as a string.
+- `sources` — the retrieved document or chunk IDs. This is empty for general questions.
+- `confidence` — a numeric value between 0 and 1.
+
+In mock mode, the response is generated deterministically and validated directly using Pydantic.
+
+## Structured Prompt
+
+The optional real-LLM path uses a structured prompt following the Role–Context–Task–Format–Length skeleton.
+
+The prompt also contains an explicit grounding constraint:
+
+> Do not answer using information that is not present in the provided context.
+
+A few-shot example is also included to demonstrate the expected question, context, and answer format.
+
+The prompt instructs the model to provide a concise answer using only the retrieved Zepto policy context.
+
+
+## FastAPI
+
+The application is exposed through a FastAPI `POST /ask` endpoint.
+
+Run the server locally with:
+
+```bash
+uvicorn support_assistant.app:app --host 127.0.0.1 --port 8000
+```
+
+### Example 1 — Policy Question
+
+Request:
+
+```json
+{
+  "query": "What is the delivery policy?"
+}
+```
+
+This query contains the `delivery` keyword and is routed to `policy_question`, followed by ChromaDB retrieval.
+
+### Example 2 — General Question
+
+Request:
+
+```json
+{
+  "query": "What is the capital of India?"
+}
+```
+
+This query is routed to `general_question` and handled by the `direct_answer` node without retrieval.
+
+Both examples were tested with the default `MOCK_LLM` setting.
+
+
+## Docker
+
+A Dockerfile is included in the repository for local containerization.
+
+Build the image with:
+
+```bash
+docker build -t zepto-support-assistant .
+```
+
+Run the container with:
+
+```bash
+docker run -p 7860:7860 zepto-support-assistant
+```
+
+The container runs the FastAPI application on port `7860` using Uvicorn.
+
+Docker was not executed in Google Colab because the Colab runtime used for this project did not have Docker installed. The Dockerfile is provided and configured for local Docker build and execution.
+
+## Technologies Used
 
 - Python
-- requests
-- BeautifulSoup
-- pandas
-- SQLite
-- sqlite3
+- FastAPI
+- LangGraph
+- ChromaDB
+- Sentence Transformers
+- Pydantic
+- Uvicorn
+- Docker
 
-## 3. Installation
 
-Install the required packages:
+## API Test Results
 
-pip install -r requirements.txt
+The following tests were performed locally with the default `MOCK_LLM` setting.
 
-SQLite is provided through Python's built-in sqlite3 module.
+### Test 1 — Policy Question
 
-## 4. Running the Pipeline
+Request:
 
-Run the complete pipeline using:
+```json
+{
+  "query": "What is the delivery policy?"
+}
+```
 
-python pipeline.py
+Raw response:
 
-The script automatically scrapes, cleans, converts, stores, queries, and validates the data.
+```json
+{
+  "answer": "Based on the retrieved context: Zepto delivers grocery and household essentials to serviceable pin codes within 10 to 30 minutes of order confirmation, depending on the customer's delivery zone and current order volume. Standard del",
+  "sources": ["doc_01", "doc_02", "doc_05"],
+  "confidence": 1.0
+}
+```
 
-## 5. Cleaning and Parsing Decisions
+This query was classified as a `policy_question` and routed through ChromaDB retrieval.
 
-### Price
+### Test 2 — General Question
 
-The currency symbol is removed and the price is converted to a float.
+Request:
 
-Example: GBP 51.77 becomes 51.77.
+```json
+{
+  "query": "What is the capital of India?"
+}
+```
 
-The resulting column is price_gbp.
+Raw response:
 
-### Star Rating
+```json
+{
+  "answer": "I can only answer questions about Zepto policies right now.",
+  "sources": [],
+  "confidence": 1.0
+}
+```
 
-The website provides ratings as text: One, Two, Three, Four, Five.
+This query was classified as a `general_question` and routed to `direct_answer` without retrieval.
 
-These are converted to integers:
+## Running Locally
 
-One -> 1
-Two -> 2
-Three -> 3
-Four -> 4
-Five -> 5
+Start the FastAPI server with:
 
-The resulting column is rating.
+```bash
+uvicorn support_assistant.app:app --host 127.0.0.1 --port 8000
+```
 
-### Availability
+The API is available at `POST /ask`.
 
-Availability text is converted into a boolean value.
-
-In stock -> True
-Out of stock -> False
-
-The resulting column is in_stock.
-
-SQLite stores boolean values as 1 and 0.
-
-### Missing Numeric Values
-
-If a numeric field fails to parse, median imputation is used.
-
-This preserves the maximum amount of scraped catalogue data instead of unnecessarily dropping rows.
-
-### Missing Category
-
-If a category cannot be obtained, it is assigned the value Unknown.
-
-## 6. Currency Conversion
-
-The required fixed project-defined conversion rate is:
-
-1 GBP = 105.50 INR
-
-This is an artificial fixed baseline specified by the project.
-
-No live currency API is required or used.
-
-The calculation is:
-
-price_inr = price_gbp * 105.50
-
-The result is rounded to two decimal places.
-
-## 7. Database Design
-
-The project uses SQLite with two normalized tables.
-
-### categories
-
-categories(category_id INTEGER PRIMARY KEY, category_name TEXT UNIQUE)
-
-### books
-
-books(book_id INTEGER PRIMARY KEY, title TEXT, price_gbp REAL, price_inr REAL, rating INTEGER, in_stock INTEGER, category_id INTEGER, FOREIGN KEY(category_id) REFERENCES categories(category_id))
-
-The categories table stores unique category names.
-
-The books table stores book information and references categories using category_id.
-
-## 8. SQL Queries
-
-Six SQL queries are included.
-
-They collectively demonstrate:
-- SELECT
-- WHERE
-- ORDER BY
-- LIMIT
-- DISTINCT
-- BETWEEN
-- JOIN
-
-Query 1 uses SELECT and WHERE to find highly rated books.
-Query 2 uses ORDER BY to sort books by price.
-Query 3 uses LIMIT to return the top 10 records.
-Query 4 uses DISTINCT to list unique categories.
-Query 5 uses BETWEEN to filter books by price range.
-Query 6 uses JOIN to combine books and category information.
-
-## 9. Pandas SQL Reading
-
-At least two SQL query results are read into pandas DataFrames using pd.read_sql().
-
-The results are saved in the outputs directory.
-
-## 10. SQL JOIN vs pandas.merge()
-
-The SQL JOIN result is independently reproduced using pd.merge().
-
-The SQL JOIN and pandas merge results are normalized for compatible data types and compared using DataFrame.equals().
-
-The final comparison confirms that both approaches produce equivalent output.
-
-The comparison is saved in outputs/sql_vs_merge_comparison.txt.
-
-## 11. Output Files
-
-The outputs directory contains:
-
-- query_1_select_where.csv
-- query_2_order_by.csv
-- query_3_limit.csv
-- query_4_distinct.csv
-- query_5_between.csv
-- query_6_join.csv
-- query_outputs.txt
-- read_sql_select_where.csv
-- read_sql_join.csv
-- sql_join_result.csv
-- merge_results.csv
-- sql_vs_merge_comparison.txt
-
-## 12. Main Files
-
-data_pipeline/
-
-    pipeline.py
-    queries.py
-    requirements.txt
-    README.md
-    books.db
-    outputs/
-
-pipeline.py contains the complete end-to-end pipeline.
-
-queries.py contains the SQL queries.
-
-requirements.txt contains the required Python packages.
-
-books.db is the SQLite database generated by the pipeline.
-
-outputs contains SQL query results and the SQL-versus-pandas comparison.
-
-## 13. Reproducibility
-
-The SQLite database can be recreated from scratch by running:
-
-python pipeline.py
-
-No manual copy-pasting of scraped data is required.
-
-## 14. Validation
-
-The pipeline validates that:
-
-- at least 60 books are available
-- at least 3 categories are available
-- ratings are integers from 1 to 5
-- in_stock is boolean in pandas
-- INR prices use the required fixed conversion rate
-- the SQLite database contains the required primary and foreign key relationship
-- all required SQL clauses are represented
-- at least two results are read using pd.read_sql()
-- the SQL JOIN and pandas pd.merge() results are equivalent
-
-## 15. Conclusion
-
-This module demonstrates a complete raw-to-relational data pipeline:
-
-Public Catalogue
--> Web Scraping
--> Data Cleaning
--> Type Conversion
--> GBP to INR Enrichment
--> Normalized SQLite Database
--> SQL Queries
--> Pandas Analysis
--> SQL JOIN vs pd.merge Validation
-
-The pipeline is reproducible and can be regenerated from scratch using the provided Python script.
